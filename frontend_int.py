@@ -96,14 +96,27 @@ def init_config_options():
     
     # Cortex Search Service Selection
     if st.session_state.service_metadata:
+        service_names = [s["name"] for s in st.session_state.service_metadata]
+        
+        # Set default index to PETAPP.DATA.CC_SEARCH_SERVICE_CS if it exists
+        default_index = 0
+        target_service = "PETAPP.DATA.CC_SEARCH_SERVICE_CS"
+        if target_service in service_names:
+            default_index = service_names.index(target_service)
+        
         st.sidebar.selectbox(
-            "Select Pet Health Search Service:",
-            [s["name"] for s in st.session_state.service_metadata],
+            "Pet Health Search Service:",
+            service_names,
+            index=default_index,
             key="selected_cortex_search_service",
             help="Choose the search service containing pet health documents"
         )
+        
+        # Display current service info
+        if st.session_state.get('selected_cortex_search_service'):
+            st.sidebar.success(f"✅ Using: {st.session_state.selected_cortex_search_service}")
     else:
-        st.sidebar.warning("No Cortex Search Services found. Please create one first.")
+        st.sidebar.warning("No Cortex Search Services found. Please ensure PETAPP.DATA.CC_SEARCH_SERVICE_CS is available.")
     
     # Control buttons
     col1, col2 = st.sidebar.columns(2)
@@ -467,13 +480,16 @@ def main():
         or "selected_cortex_search_service" not in st.session_state
     )
     
+    if disable_chat:
+        st.warning("⚠️ Please ensure the PETAPP.DATA.CC_SEARCH_SERVICE_CS service is available and selected in the sidebar.")
+    
     # Handle sample question
     if 'sample_question' in st.session_state:
         question = st.session_state.sample_question
         del st.session_state.sample_question
     else:
         question = st.chat_input(
-            "Ask me about your pet's health..." if not disable_chat else "Please configure a Cortex Search Service first",
+            "Ask me about your pet's health..." if not disable_chat else "Please ensure PETAPP.DATA.CC_SEARCH_SERVICE_CS is configured",
             disabled=disable_chat
         )
     
