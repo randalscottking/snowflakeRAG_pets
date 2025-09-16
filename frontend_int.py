@@ -72,17 +72,43 @@ def init_messages():
 def init_service_metadata():
     """Initialize cortex search service metadata"""
     if "service_metadata" not in st.session_state:
-        services = session.sql("SHOW CORTEX SEARCH SERVICES;").collect()
         service_metadata = []
-        if services:
-            for s in services:
-                svc_name = s["name"]
-                svc_search_col = session.sql(
-                    f"DESC CORTEX SEARCH SERVICE {svc_name};"
-                ).collect()[0]["search_column"]
-                service_metadata.append(
-                    {"name": svc_name, "search_column": svc_search_col}
-                )
+        try:
+            # Try to show services in current context
+            services = session.sql("SHOW CORTEX SEARCH SERVICES;").collect()
+            if services:
+                for s in services:
+                    try:
+                        svc_name = s["name"]
+                        svc_search_col = session.sql(
+                            f"DESC CORTEX SEARCH SERVICE {svc_name};"
+                        ).collect()[0]["search_column"]
+                        service_metadata.append(
+                            {"name": svc_name, "search_column": svc_search_col}
+                        )
+                    except Exception as e:
+                        st.sidebar.error(f"Error describing service {svc_name}: {e}")
+            else:
+                # Try the specific service we know about
+                try:
+                    test_service = session.sql("DESC CORTEX SEARCH SERVICE PETAPP.DATA.CC_SEARCH_SERVICE_CS;").collect()
+                    if test_service:
+                        service_metadata.append({
+                            "name": "PETAPP.DATA.CC_SEARCH_SERVICE_CS",
+                            "search_column": test_service[0]["search_column"]
+                        })
+                except Exception as e:
+                    st.sidebar.error(f"Could not access PETAPP.DATA.CC_SEARCH_SERVICE_CS: {e}")
+        
+        except Exception as e:
+            st.sidebar.error(f"Error querying Cortex Search Services: {e}")
+            # Fallback - assume the service exists with default search column
+            service_metadata = [{
+                "name": "PETAPP.DATA.CC_SEARCH_SERVICE_CS",
+                "search_column": "chunk"  # Common default
+            }]
+            st.sidebar.warning("Using fallback configuration. Please verify the service exists.")
+        
         st.session_state.service_metadata = service_metadata
 
 def init_pet_info():
@@ -93,6 +119,14 @@ def init_pet_info():
 def init_config_options():
     """Initialize configuration options in the sidebar"""
     st.sidebar.markdown("### ⚙️ Configuration")
+    
+    # Show current database context
+    try:
+        current_db = session.get_current_database()
+        current_schema = session.get_current_schema()
+        st.sidebar.info(f"📍 Context: {current_db}.{current_schema}")
+    except:
+        st.sidebar.warning("Could not determine current database context")
     
     # Cortex Search Service Selection
     if st.session_state.service_metadata:
@@ -114,9 +148,37 @@ def init_config_options():
         
         # Display current service info
         if st.session_state.get('selected_cortex_search_service'):
-            st.sidebar.success(f"✅ Using: {st.session_state.selected_cortex_search_service}")
+            selected_service = next((s for s in st.session_state.service_metadata 
+                                  if s["name"] == st.session_state.selected_cortex_search_service), None)
+            if selected_service:
+                st.sidebar.success(f"✅ Service: {st.session_state.selected_cortex_search_service}")
+                st.sidebar.info(f"🔍 Search Column: {selected_service['search_column']}")
     else:
-        st.sidebar.warning("No Cortex Search Services found. Please ensure PETAPP.DATA.CC_SEARCH_SERVICE_CS is available.")
+        st.sidebar.error("❌ No Cortex Search Services found")
+        st.sidebar.markdown("**Troubleshooting:**")
+        st.sidebar.markdown("- Ensure you're in the correct database/schema")
+        st.sidebar.markdown("- Verify the service PETAPP.DATA.CC_SEARCH_SERVICE_CS exists")
+        st.sidebar.markdown("- Check permissions to access Cortex Search services")
+        
+        # Manual configuration option
+        with st.sidebar.expander("🔧 Manual Configuration"):
+            manual_service = st.text_input(
+                "Service Name:", 
+                value="PETAPP.DATA.CC_SEARCH_SERVICE_CS",
+                key="manual_service_name"
+            )
+            manual_search_col = st.text_input(
+                "Search Column:", 
+                value="chunk",
+                key="manual_search_column"
+            )
+            if st.button("Use Manual Config"):
+                st.session_state.service_metadata = [{
+                    "name": manual_service,
+                    "search_column": manual_search_col
+                }]
+                st.session_state.selected_cortex_search_service = manual_service
+                st.rerun()
     
     # Control buttons
     col1, col2 = st.sidebar.columns(2)
