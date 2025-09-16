@@ -323,31 +323,67 @@ def export_chat():
 
 def query_cortex_search_service(query, columns=[], filter={}):
     """Query the cortex search service for relevant pet health documents"""
-    db, schema = session.get_current_database(), session.get_current_schema()
+    try:
+        db, schema = session.get_current_database(), session.get_current_schema()
+        
+        # Handle the fully qualified service name
+        service_name = st.session_state.selected_cortex_search_service
+        
+        # If service name contains dots, it might be fully qualified
+        if "." in service_name:
+            # Use the service as-is, it's likely fully qualified
+            parts = service_name.split(".")
+            if len(parts) == 3:
+                service_db, service_schema, service_name_only = parts
+                cortex_search_service = (
+                    root.databases[service_db]
+                    .schemas[service_schema]
+                    .cortex_search_services[service_name_only]
+                )
+            else:
+                # Fallback to current context
+                cortex_search_service = (
+                    root.databases[db]
+                    .schemas[schema]
+                    .cortex_search_services[service_name]
+                )
+        else:
+            # Use current database/schema context
+            cortex_search_service = (
+                root.databases[db]
+                .schemas[schema]
+                .cortex_search_services[service_name]
+            )
+        
+        context_documents = cortex_search_service.search(
+            query, columns=columns, filter=filter, limit=st.session_state.num_retrieved_chunks
+        )
+        results = context_documents.results
+        
+        service_metadata = st.session_state.service_metadata
+        search_col = [s["search_column"] for s in service_metadata
+                      if s["name"] == st.session_state.selected_cortex_search_service][0].lower()
+        
+        context_str = ""
+        for i, r in enumerate(results):
+            context_str += f"Context document {i+1}: {r[search_col]} \n" + "\n"
+        
+        if st.session_state.debug:
+            st.sidebar.text_area("Retrieved Context", context_str, height=400)
+            st.sidebar.json({"search_results": results})
+        
+        return context_str, results
     
-    cortex_search_service = (
-        root.databases[db]
-        .schemas[schema]
-        .cortex_search_services[st.session_state.selected_cortex_search_service]
-    )
-    
-    context_documents = cortex_search_service.search(
-        query, columns=columns, filter=filter, limit=st.session_state.num_retrieved_chunks
-    )
-    results = context_documents.results
-    
-    service_metadata = st.session_state.service_metadata
-    search_col = [s["search_column"] for s in service_metadata
-                  if s["name"] == st.session_state.selected_cortex_search_service][0].lower()
-    
-    context_str = ""
-    for i, r in enumerate(results):
-        context_str += f"Context document {i+1}: {r[search_col]} \n" + "\n"
-    
-    if st.session_state.debug:
-        st.sidebar.text_area("Retrieved Context", context_str, height=400)
-    
-    return context_str, results
+    except Exception as e:
+        st.error(f"Error querying search service: {e}")
+        if st.session_state.debug:
+            st.sidebar.error(f"Search error details: {str(e)}")
+            # Show more debugging info
+            st.sidebar.write("Debug info:")
+            st.sidebar.write(f"Database: {session.get_current_database()}")
+            st.sidebar.write(f"Schema: {session.get_current_schema()}")
+            st.sidebar.write(f"Service: {st.session_state.selected_cortex_search_service}")
+        return "No context retrieved due to search error.", []
 
 def get_chat_history():
     """Get recent chat history for context"""
