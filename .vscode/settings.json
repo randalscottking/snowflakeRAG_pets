@@ -1,0 +1,8 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "python-envs.pythonProjects": [],
+    "yaml.schemas": {
+        "file:///Users/randalking/.vscode/extensions/ms-python.python-2025.14.0-darwin-arm64/schemas/conda-environment.json": "file:///Users/randalking/Documents/git/snowflakeRAG_pets/environment.yml"
+    }
+}
