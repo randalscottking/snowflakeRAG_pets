@@ -439,8 +439,20 @@ def get_chat_history():
     return relevant
 
 def complete(model, prompt):
-    """Generate completion using Snowflake Cortex"""
-    return Complete(model, prompt).replace("$", "\$")
+    try:
+        # Use SQL to call Cortex Complete
+        sql = f"""
+            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                '{model}',
+                '{prompt.replace("'", "''")}'
+            ) AS result
+        """
+        df = session.sql(sql).to_pandas()
+        return df["RESULT"][0]
+    except Exception as e:
+        st.error(f"Error in completion: {e}")
+        return "Error: Could not generate completion."
+
 
 def make_chat_history_summary(chat_history, question):
     """Create a summary of chat history with current question for better context"""
