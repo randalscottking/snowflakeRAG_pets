@@ -5,6 +5,10 @@ from snowflake.snowpark.context import get_active_session
 import json
 from datetime import datetime
 
+# --- Move session and root initialization to module-level to avoid NameError ---
+session = get_active_session()
+root = Root(session)
+
 # Available models for Snowflake Cortex
 MODELS = [
     "mistral-large2",
@@ -66,7 +70,7 @@ st.markdown("""
 
 def init_messages():
     """Initialize chat messages in session state"""
-    if st.session_state.clear_conversation or "messages" not in st.session_state:
+    if st.session_state.get("clear_conversation", False) or "messages" not in st.session_state:
         st.session_state.messages = []
 
 def init_service_metadata():
@@ -138,7 +142,7 @@ def init_config_options():
         current_schema = session.get_current_schema()
         st.sidebar.info(f"📍 Current Context: {current_db}.{current_schema}")
         st.sidebar.info(f"🎯 Target Service: PETAPP.DATA.CC_SEARCH_SERVICE_CS")
-    except:
+    except Exception:
         st.sidebar.warning("Could not determine current database context")
     
     # Cortex Search Service Selection
@@ -198,7 +202,7 @@ def init_config_options():
     with col1:
         st.button("🗑️ Clear Chat", key="clear_conversation")
     with col2:
-        if st.button("📥 Export") and st.session_state.messages:
+        if st.session_state.get("messages"):
             export_chat()
     
     # Toggles
@@ -234,27 +238,38 @@ def display_pet_info_sidebar():
     st.sidebar.markdown("### 🐕 Pet Information")
     
     with st.sidebar.expander("Pet Details (Helps improve responses)", expanded=False):
+        pet_types = ["", "Dog", "Cat", "Bird", "Rabbit", "Guinea Pig", "Hamster", "Fish", "Reptile", "Other"]
+        pet_type_value = st.session_state.pet_info.get('type', '')
+        try:
+            pet_type_index = pet_types.index(pet_type_value)
+        except ValueError:
+            pet_type_index = 0
+
         pet_name = st.text_input("Pet Name", value=st.session_state.pet_info.get('name', ''), placeholder="e.g., Buddy")
-        
         pet_type = st.selectbox(
             "Pet Type", 
-            ["", "Dog", "Cat", "Bird", "Rabbit", "Guinea Pig", "Hamster", "Fish", "Reptile", "Other"],
-            index=["", "Dog", "Cat", "Bird", "Rabbit", "Guinea Pig", "Hamster", "Fish", "Reptile", "Other"].index(st.session_state.pet_info.get('type', '')) if st.session_state.pet_info.get('type', '') in ["", "Dog", "Cat", "Bird", "Rabbit", "Guinea Pig", "Hamster", "Fish", "Reptile", "Other"] else 0
+            pet_types,
+            index=pet_type_index
         )
-        
         pet_breed = st.text_input("Breed", value=st.session_state.pet_info.get('breed', ''), placeholder="e.g., Golden Retriever")
         
         col1, col2 = st.columns(2)
         with col1:
             pet_age = st.number_input("Age (years)", min_value=0.0, max_value=30.0, step=0.5, 
-                                     value=st.session_state.pet_info.get('age', 0.0))
+                                     value=st.session_state.pet_info.get('age', 0.0) or 0.0)
         with col2:
             pet_weight = st.number_input("Weight (lbs)", min_value=0.0, step=0.1, 
-                                        value=st.session_state.pet_info.get('weight', 0.0))
+                                        value=st.session_state.pet_info.get('weight', 0.0) or 0.0)
         
         # Additional details
-        spayed_neutered = st.selectbox("Spayed/Neutered", ["Unknown", "Yes", "No"],
-                                      index=["Unknown", "Yes", "No"].index(st.session_state.pet_info.get('spayed_neutered', 'Unknown')))
+        spayed_neutered_options = ["Unknown", "Yes", "No"]
+        spayed_neutered_value = st.session_state.pet_info.get('spayed_neutered', 'Unknown')
+        try:
+            spayed_neutered_index = spayed_neutered_options.index(spayed_neutered_value)
+        except ValueError:
+            spayed_neutered_index = 0
+        spayed_neutered = st.selectbox("Spayed/Neutered", spayed_neutered_options,
+                                      index=spayed_neutered_index)
         
         medical_conditions = st.text_area("Known Medical Conditions", 
                                          value=st.session_state.pet_info.get('medical_conditions', ''),
@@ -294,7 +309,7 @@ def display_sample_questions():
 
 def display_analytics():
     """Display conversation analytics"""
-    if st.session_state.messages:
+    if st.session_state.get("messages"):
         st.sidebar.markdown("### 📊 Session Stats")
         
         user_messages = [msg for msg in st.session_state.messages if msg["role"] == "user"]
@@ -326,7 +341,6 @@ def export_chat():
         "model": st.session_state.get('model_name', ''),
         "messages": st.session_state.messages
     }
-    
     st.download_button(
         "Download Chat History",
         data=json.dumps(chat_export, indent=2, default=str),
@@ -381,14 +395,21 @@ def query_cortex_search_service(query, columns=[], filter={}):
         results = context_documents.results
         
         service_metadata = st.session_state.service_metadata
-        search_col = [s["search_column"] for s in service_metadata
-                      if s["name"] == st.session_state.selected_cortex_search_service][0].lower()
+        try:
+            search_col = next(
+                s["search_column"] for s in service_metadata
+                if s["name"] == st.session_state.selected_cortex_search_service
+            )
+        except StopIteration:
+            search_col = "chunk"
+        search_col = search_col.lower()
         
         context_str = ""
         for i, r in enumerate(results):
-            context_str += f"Context document {i+1}: {r[search_col]} \n" + "\n"
+            if search_col in r:
+                context_str += f"Context document {i+1}: {r[search_col]} \n\n"
         
-        if st.session_state.debug:
+        if st.session_state.get("debug"):
             st.sidebar.text_area("Retrieved Context", context_str, height=400)
             st.sidebar.json({"search_results": results})
         
@@ -396,7 +417,7 @@ def query_cortex_search_service(query, columns=[], filter={}):
     
     except Exception as e:
         st.error(f"Error querying search service: {e}")
-        if st.session_state.debug:
+        if st.session_state.get("debug"):
             st.sidebar.error(f"Search error details: {str(e)}")
             # Show more debugging info
             st.sidebar.write("Debug info:")
@@ -408,10 +429,14 @@ def query_cortex_search_service(query, columns=[], filter={}):
 
 def get_chat_history():
     """Get recent chat history for context"""
-    start_index = max(
-        0, len(st.session_state.messages) - st.session_state.num_chat_messages
-    )
-    return st.session_state.messages[start_index : len(st.session_state.messages) - 1]
+    n = st.session_state.num_chat_messages
+    # Only get up to but not including the latest user message
+    msgs = st.session_state.messages
+    if len(msgs) < 2:
+        return []
+    # Exclude the latest user message
+    relevant = msgs[max(0, len(msgs)-n-1):len(msgs)-1]
+    return relevant
 
 def complete(model, prompt):
     """Generate completion using Snowflake Cortex"""
@@ -437,7 +462,7 @@ def make_chat_history_summary(chat_history, question):
     
     summary = complete(st.session_state.model_name, prompt)
     
-    if st.session_state.debug:
+    if st.session_state.get("debug"):
         st.sidebar.text_area("Enhanced Query", summary.replace("$", "\$"), height=150)
     
     return summary
@@ -445,7 +470,7 @@ def make_chat_history_summary(chat_history, question):
 def get_pet_context():
     """Build pet-specific context string"""
     pet_info = st.session_state.pet_info
-    if not any(pet_info.values()):
+    if not pet_info or not any(pet_info.values()):
         return ""
     
     pet_details = []
@@ -505,7 +530,7 @@ def create_prompt(user_question):
         - Be empathetic and understanding of pet owners' concerns
         - Use the pet information provided to give more personalized advice when relevant
         
-        If you cannot answer the question based on the provided context, say "I don't have enough information in my knowledge base to answer that question. Please consult with a qualified veterinarian."
+        If you cannot answer the question based on the provided context, say "I don't have enough information in my knowledge base to answer that question. Please consult with a qualified veterinarian for advice."
         
         Don't say phrases like "according to the provided context" - speak naturally.
 
@@ -547,7 +572,7 @@ def display_main_interface():
     """, unsafe_allow_html=True)
     
     # Display current pet info if available
-    if any(st.session_state.pet_info.values()):
+    if st.session_state.pet_info and any(st.session_state.pet_info.values()):
         pet_info = st.session_state.pet_info
         pet_summary = []
         if pet_info.get('name'):
@@ -660,6 +685,4 @@ def main():
     """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
-    session = get_active_session()
-    root = Root(session)
     main()
