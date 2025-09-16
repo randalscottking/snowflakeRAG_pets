@@ -74,7 +74,7 @@ def init_service_metadata():
     if "service_metadata" not in st.session_state:
         service_metadata = []
         try:
-            # Try to show services in current context
+            # Try to show services in current context first
             services = session.sql("SHOW CORTEX SEARCH SERVICES;").collect()
             if services:
                 for s in services:
@@ -88,17 +88,29 @@ def init_service_metadata():
                         )
                     except Exception as e:
                         st.sidebar.error(f"Error describing service {svc_name}: {e}")
-            else:
-                # Try the specific service we know about
-                try:
-                    test_service = session.sql("DESC CORTEX SEARCH SERVICE PETAPP.DATA.CC_SEARCH_SERVICE_CS;").collect()
-                    if test_service:
+            
+            # Also try to specifically check for our known service in PETAPP.DATA
+            try:
+                # Try to describe the specific service we know about
+                test_service = session.sql("DESC CORTEX SEARCH SERVICE PETAPP.DATA.CC_SEARCH_SERVICE_CS;").collect()
+                if test_service:
+                    # Check if it's already in our list
+                    existing_names = [s["name"] for s in service_metadata]
+                    if "PETAPP.DATA.CC_SEARCH_SERVICE_CS" not in existing_names:
                         service_metadata.append({
                             "name": "PETAPP.DATA.CC_SEARCH_SERVICE_CS",
                             "search_column": test_service[0]["search_column"]
                         })
-                except Exception as e:
-                    st.sidebar.error(f"Could not access PETAPP.DATA.CC_SEARCH_SERVICE_CS: {e}")
+            except Exception as e:
+                st.sidebar.warning(f"Could not access PETAPP.DATA.CC_SEARCH_SERVICE_CS: {e}")
+            
+            # If still no services found, create fallback
+            if not service_metadata:
+                service_metadata = [{
+                    "name": "PETAPP.DATA.CC_SEARCH_SERVICE_CS",
+                    "search_column": "chunk"  # Common default
+                }]
+                st.sidebar.warning("Using fallback configuration for PETAPP.DATA.CC_SEARCH_SERVICE_CS")
         
         except Exception as e:
             st.sidebar.error(f"Error querying Cortex Search Services: {e}")
@@ -124,7 +136,8 @@ def init_config_options():
     try:
         current_db = session.get_current_database()
         current_schema = session.get_current_schema()
-        st.sidebar.info(f"📍 Context: {current_db}.{current_schema}")
+        st.sidebar.info(f"📍 Current Context: {current_db}.{current_schema}")
+        st.sidebar.info(f"🎯 Target Service: PETAPP.DATA.CC_SEARCH_SERVICE_CS")
     except:
         st.sidebar.warning("Could not determine current database context")
     
@@ -324,36 +337,43 @@ def export_chat():
 def query_cortex_search_service(query, columns=[], filter={}):
     """Query the cortex search service for relevant pet health documents"""
     try:
-        db, schema = session.get_current_database(), session.get_current_schema()
-        
-        # Handle the fully qualified service name
+        # For the specific service PETAPP.DATA.CC_SEARCH_SERVICE_CS
         service_name = st.session_state.selected_cortex_search_service
         
-        # If service name contains dots, it might be fully qualified
-        if "." in service_name:
-            # Use the service as-is, it's likely fully qualified
-            parts = service_name.split(".")
-            if len(parts) == 3:
-                service_db, service_schema, service_name_only = parts
-                cortex_search_service = (
-                    root.databases[service_db]
-                    .schemas[service_schema]
-                    .cortex_search_services[service_name_only]
-                )
+        # Since we know the service is in PETAPP.DATA, use those explicitly
+        if service_name == "PETAPP.DATA.CC_SEARCH_SERVICE_CS":
+            cortex_search_service = (
+                root.databases["PETAPP"]
+                .schemas["DATA"]
+                .cortex_search_services["CC_SEARCH_SERVICE_CS"]
+            )
+        else:
+            # Handle other cases - parse the service name
+            if "." in service_name:
+                parts = service_name.split(".")
+                if len(parts) == 3:
+                    service_db, service_schema, service_name_only = parts
+                    cortex_search_service = (
+                        root.databases[service_db]
+                        .schemas[service_schema]
+                        .cortex_search_services[service_name_only]
+                    )
+                else:
+                    # Fallback to current context
+                    db, schema = session.get_current_database(), session.get_current_schema()
+                    cortex_search_service = (
+                        root.databases[db]
+                        .schemas[schema]
+                        .cortex_search_services[service_name]
+                    )
             else:
-                # Fallback to current context
+                # Use current database/schema context
+                db, schema = session.get_current_database(), session.get_current_schema()
                 cortex_search_service = (
                     root.databases[db]
                     .schemas[schema]
                     .cortex_search_services[service_name]
                 )
-        else:
-            # Use current database/schema context
-            cortex_search_service = (
-                root.databases[db]
-                .schemas[schema]
-                .cortex_search_services[service_name]
-            )
         
         context_documents = cortex_search_service.search(
             query, columns=columns, filter=filter, limit=st.session_state.num_retrieved_chunks
@@ -380,9 +400,10 @@ def query_cortex_search_service(query, columns=[], filter={}):
             st.sidebar.error(f"Search error details: {str(e)}")
             # Show more debugging info
             st.sidebar.write("Debug info:")
-            st.sidebar.write(f"Database: {session.get_current_database()}")
-            st.sidebar.write(f"Schema: {session.get_current_schema()}")
-            st.sidebar.write(f"Service: {st.session_state.selected_cortex_search_service}")
+            st.sidebar.write(f"Current Database: {session.get_current_database()}")
+            st.sidebar.write(f"Current Schema: {session.get_current_schema()}")
+            st.sidebar.write(f"Target Service: {st.session_state.selected_cortex_search_service}")
+            st.sidebar.write("Trying to access: PETAPP.DATA.CC_SEARCH_SERVICE_CS")
         return "No context retrieved due to search error.", []
 
 def get_chat_history():
