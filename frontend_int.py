@@ -248,7 +248,7 @@ def display_configuration_sidebar():
             st.sidebar.error("Please enter a search service name")
         else:
             try:
-                with st.sidebar.spinner("Testing..."):
+                with st.spinner("Testing..."):
                     test_results = st.session_state.rag_service.search_documents(
                         "test query", 
                         st.session_state.search_service, 
