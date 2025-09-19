@@ -2,29 +2,30 @@ import streamlit as st
 from snowflake.core import Root
 from snowflake.cortex import Complete
 from snowflake.snowpark.context import get_active_session
-import json
 
 # --- Move session and root initialization to module-level to avoid NameError ---
 session = get_active_session()
 root = Root(session)
 
-# Use llama3-8b model
-MODEL = "llama3-8b"
-
-# Hardcoded Cortex Search Service configuration
-CORTEX_SERVICE = "PETAPP.DATA.CC_SEARCH_SERVICE_CS"
-SEARCH_COLUMN = "chunk"
+# Available models for Snowflake Cortex
+MODELS = [
+    "llama3.1-70b",
+    "llama3.1-8b",
+    "llama3-70b",
+    "llama3-8b",
+]
 
 # Page configuration
 st.set_page_config(
     page_title="🐾 Pet Health Assistant",
     page_icon="🐾",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 # Custom CSS for pet health theme
-st.markdown("""
+st.markdown(
+    """
 <style>
     .main-header {
         text-align: center;
@@ -60,33 +61,114 @@ st.markdown("""
         border-radius: 1rem;
     }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
+
 
 def init_messages():
     """Initialize chat messages in session state"""
-    if st.session_state.get("clear_conversation", False) or "messages" not in st.session_state:
+    if (
+        st.session_state.get("clear_conversation", False)
+        or "messages" not in st.session_state
+    ):
         st.session_state.messages = []
+
 
 def init_service_metadata():
     """Initialize cortex search service metadata"""
     if "service_metadata" not in st.session_state:
-        # Use hardcoded service configuration
-        st.session_state.service_metadata = [{
-            "name": CORTEX_SERVICE,
-            "search_column": SEARCH_COLUMN
-        }]
+        service_metadata = []
+        try:
+            # Try to show services in current context first
+            services = session.sql("SHOW CORTEX SEARCH SERVICES;").collect()
+            if services:
+                for s in services:
+                    try:
+                        svc_name = s["name"]
+                        svc_search_col = session.sql(
+                            f"DESC CORTEX SEARCH SERVICE {svc_name};"
+                        ).collect()[0]["search_column"]
+                        service_metadata.append(
+                            {"name": svc_name, "search_column": svc_search_col}
+                        )
+                    except Exception as e:
+                        st.sidebar.error(f"Error describing service {svc_name}: {e}")
+
+            # Also try to specifically check for our known service in PETAPP.DATA
+            try:
+                # Try to describe the specific service we know about
+                test_service = session.sql(
+                    "DESC CORTEX SEARCH SERVICE PETAPP.DATA.CC_SEARCH_SERVICE_CS;"
+                ).collect()
+                if test_service:
+                    # Check if it's already in our list
+                    existing_names = [s["name"] for s in service_metadata]
+                    if "PETAPP.DATA.CC_SEARCH_SERVICE_CS" not in existing_names:
+                        service_metadata.append(
+                            {
+                                "name": "PETAPP.DATA.CC_SEARCH_SERVICE_CS",
+                                "search_column": test_service[0]["search_column"],
+                            }
+                        )
+            except Exception as e:
+                st.sidebar.warning(
+                    f"Could not access PETAPP.DATA.CC_SEARCH_SERVICE_CS: {e}"
+                )
+
+            # If still no services found, create fallback
+            if not service_metadata:
+                service_metadata = [
+                    {
+                        "name": "PETAPP.DATA.CC_SEARCH_SERVICE_CS",
+                        "search_column": "chunk",  # Common default
+                    }
+                ]
+                st.sidebar.warning(
+                    "Using fallback configuration for PETAPP.DATA.CC_SEARCH_SERVICE_CS"
+                )
+
+        except Exception as e:
+            st.sidebar.error(f"Error querying Cortex Search Services: {e}")
+            # Fallback - assume the service exists with default search column
+            service_metadata = [
+                {
+                    "name": "PETAPP.DATA.CC_SEARCH_SERVICE_CS",
+                    "search_column": "chunk",  # Common default
+                }
+            ]
+            st.sidebar.warning(
+                "Using fallback configuration. Please verify the service exists."
+            )
+
+        st.session_state.service_metadata = service_metadata
+
 
 def init_pet_info():
     """Initialize pet information in session state"""
     if "pet_info" not in st.session_state:
         st.session_state.pet_info = {}
 
+
 def init_selected_service():
     """Initialize selected cortex search service and default config values"""
     if "selected_cortex_search_service" not in st.session_state:
-        st.session_state.selected_cortex_search_service = CORTEX_SERVICE
+        # Set default service if available
+        if st.session_state.service_metadata:
+            target_service = "PETAPP.DATA.CC_SEARCH_SERVICE_CS"
+            service_names = [s["name"] for s in st.session_state.service_metadata]
+            if target_service in service_names:
+                st.session_state.selected_cortex_search_service = target_service
+            else:
+                st.session_state.selected_cortex_search_service = service_names[0]
+        else:
+            st.session_state.selected_cortex_search_service = (
+                "PETAPP.DATA.CC_SEARCH_SERVICE_CS"
+            )
 
     # Initialize default configuration values
+    if "model_name" not in st.session_state:
+        st.session_state.model_name = "mistral-large2"
     if "num_retrieved_chunks" not in st.session_state:
         st.session_state.num_retrieved_chunks = 5
     if "num_chat_messages" not in st.session_state:
@@ -96,63 +178,96 @@ def init_selected_service():
     if "debug" not in st.session_state:
         st.session_state.debug = False
 
+
 def display_pet_info_sidebar():
     """Display pet information input in sidebar"""
     st.sidebar.markdown("### 🐕 Pet Information")
-    
+
     with st.sidebar.expander("Pet Details (Helps improve responses)", expanded=False):
-        pet_types = ["", "Dog", "Cat", "Bird", "Rabbit", "Guinea Pig", "Hamster", "Fish", "Reptile", "Other"]
-        pet_type_value = st.session_state.pet_info.get('type', '')
+        pet_types = [
+            "",
+            "Dog",
+            "Cat",
+            "Bird",
+            "Rabbit",
+            "Guinea Pig",
+            "Hamster",
+            "Fish",
+            "Reptile",
+            "Other",
+        ]
+        pet_type_value = st.session_state.pet_info.get("type", "")
         try:
             pet_type_index = pet_types.index(pet_type_value)
         except ValueError:
             pet_type_index = 0
 
-        pet_name = st.text_input("Pet Name", value=st.session_state.pet_info.get('name', ''), placeholder="e.g., Buddy")
-        pet_type = st.selectbox(
-            "Pet Type", 
-            pet_types,
-            index=pet_type_index
+        pet_name = st.text_input(
+            "Pet Name",
+            value=st.session_state.pet_info.get("name", ""),
+            placeholder="e.g., Buddy",
         )
-        pet_breed = st.text_input("Breed", value=st.session_state.pet_info.get('breed', ''), placeholder="e.g., Golden Retriever")
-        
+        pet_type = st.selectbox("Pet Type", pet_types, index=pet_type_index)
+        pet_breed = st.text_input(
+            "Breed",
+            value=st.session_state.pet_info.get("breed", ""),
+            placeholder="e.g., Golden Retriever",
+        )
+
         col1, col2 = st.columns(2)
         with col1:
-            pet_age = st.number_input("Age (years)", min_value=0.0, max_value=30.0, step=0.5, 
-                                     value=st.session_state.pet_info.get('age', 0.0) or 0.0)
+            pet_age = st.number_input(
+                "Age (years)",
+                min_value=0.0,
+                max_value=30.0,
+                step=0.5,
+                value=st.session_state.pet_info.get("age", 0.0) or 0.0,
+            )
         with col2:
-            pet_weight = st.number_input("Weight (lbs)", min_value=0.0, step=0.1, 
-                                        value=st.session_state.pet_info.get('weight', 0.0) or 0.0)
-        
+            pet_weight = st.number_input(
+                "Weight (lbs)",
+                min_value=0.0,
+                step=0.1,
+                value=st.session_state.pet_info.get("weight", 0.0) or 0.0,
+            )
+
         # Additional details
         spayed_neutered_options = ["Unknown", "Yes", "No"]
-        spayed_neutered_value = st.session_state.pet_info.get('spayed_neutered', 'Unknown')
+        spayed_neutered_value = st.session_state.pet_info.get(
+            "spayed_neutered", "Unknown"
+        )
         try:
             spayed_neutered_index = spayed_neutered_options.index(spayed_neutered_value)
         except ValueError:
             spayed_neutered_index = 0
-        spayed_neutered = st.selectbox("Spayed/Neutered", spayed_neutered_options,
-                                      index=spayed_neutered_index)
-        
-        medical_conditions = st.text_area("Known Medical Conditions", 
-                                         value=st.session_state.pet_info.get('medical_conditions', ''),
-                                         placeholder="Any existing conditions or medications...")
-        
+        spayed_neutered = st.selectbox(
+            "Spayed/Neutered", spayed_neutered_options, index=spayed_neutered_index
+        )
+
+        medical_conditions = st.text_area(
+            "Known Medical Conditions",
+            value=st.session_state.pet_info.get("medical_conditions", ""),
+            placeholder="Any existing conditions or medications...",
+        )
+
         # Store updated pet info
         st.session_state.pet_info = {
-            'name': pet_name if pet_name else None,
-            'type': pet_type if pet_type else None,
-            'breed': pet_breed if pet_breed else None,
-            'age': pet_age if pet_age > 0 else None,
-            'weight': pet_weight if pet_weight > 0 else None,
-            'spayed_neutered': spayed_neutered if spayed_neutered != "Unknown" else None,
-            'medical_conditions': medical_conditions if medical_conditions else None
+            "name": pet_name if pet_name else None,
+            "type": pet_type if pet_type else None,
+            "breed": pet_breed if pet_breed else None,
+            "age": pet_age if pet_age > 0 else None,
+            "weight": pet_weight if pet_weight > 0 else None,
+            "spayed_neutered": spayed_neutered
+            if spayed_neutered != "Unknown"
+            else None,
+            "medical_conditions": medical_conditions if medical_conditions else None,
         }
+
 
 def display_sample_questions():
     """Display sample questions for common pet health topics"""
     st.sidebar.markdown("### 💡 Common Questions")
-    
+
     sample_questions = [
         "What are the signs of dehydration in dogs?",
         "How often should I feed my kitten?",
@@ -161,52 +276,108 @@ def display_sample_questions():
         "How can I tell if my cat is stressed?",
         "What are symptoms of pet allergies?",
         "When should I be concerned about my pet's behavior?",
-        "How do I introduce a new pet to my household?"
+        "How do I introduce a new pet to my household?",
     ]
-    
+
     st.sidebar.markdown("Click to ask:")
     for i, question in enumerate(sample_questions):
-        if st.sidebar.button(f"❓ {question}", key=f"sample_{i}", use_container_width=True):
+        if st.sidebar.button(
+            f"❓ {question}", key=f"sample_{i}", use_container_width=True
+        ):
             st.session_state.sample_question = question
             st.rerun()
-
 
 
 def query_cortex_search_service(query, columns=[], filter={}):
     """Query the cortex search service for relevant pet health documents"""
     try:
-        # Use SQL-based approach for Cortex Search
-        limit = st.session_state.num_retrieved_chunks
+        # Use SQL-based approach since CORTEX.SEARCH function may not be available
+        # Let's try using the SEARCH method through SQL
+        service_name = st.session_state.selected_cortex_search_service
 
+        # Build the SQL query for cortex search
+        columns_clause = ""
+        if columns:
+            columns_str = "', '".join(columns)
+            columns_clause = f", ARRAY_CONSTRUCT('{columns_str}')"
+
+        filter_clause = ""
+        if filter:
+            filter_items = []
+            for key, value in filter.items():
+                filter_items.append(f"'{key}', '{value}'")
+            filter_clause = f", OBJECT_CONSTRUCT({', '.join(filter_items)})"
+
+        # Try direct SQL approach first
         sql = f"""
-            SELECT SNOWFLAKE.CORTEX.SEARCH(
-                '{CORTEX_SERVICE}',
-                '{query.replace("'", "''")}'
-            ) AS search_results
+        SELECT
+            chunk,
+            file_url,
+            relative_path,
+            title
+        FROM TABLE(
+            RESULT_SCAN(LAST_QUERY_ID())
+        )
         """
 
-        df = session.sql(sql).to_pandas()
-        search_results = df["SEARCH_RESULTS"][0]
+        # For now, let's use a simpler approach - query the underlying search index table
+        # This assumes the search service is built on a table we can access
+        try:
+            # Try to find what tables are available in the PETAPP.DATA schema
+            tables_sql = "SHOW TABLES IN SCHEMA PETAPP.DATA"
+            tables_result = session.sql(tables_sql).collect()
 
-        # Parse the results - they should be in JSON format
-        if isinstance(search_results, str):
-            search_results = json.loads(search_results)
+            # Look for likely search index tables
+            search_tables = []
+            for table in tables_result:
+                table_name = table["name"].upper()
+                if any(keyword in table_name for keyword in ["SEARCH", "INDEX", "CHUNK", "DOCUMENT", "VET", "PET"]):
+                    search_tables.append(f"PETAPP.DATA.{table_name}")
 
-        # Extract results and limit them
-        results = search_results.get("results", [])[:limit]
-        search_col = SEARCH_COLUMN.lower()
-        
+            if search_tables:
+                # Use the first likely table and do a simple text search
+                search_table = search_tables[0]
+                simple_sql = f"""
+                SELECT
+                    chunk,
+                    file_url,
+                    relative_path,
+                    title
+                FROM {search_table}
+                WHERE UPPER(chunk) LIKE UPPER('%{query.replace("'", "''")}%')
+                LIMIT {st.session_state.num_retrieved_chunks}
+                """
+
+                df = session.sql(simple_sql).to_pandas()
+                results = df.to_dict('records')
+            else:
+                # Fallback - return empty results
+                results = []
+
+        except Exception as inner_e:
+            st.error(f"Error with table search: {inner_e}")
+            # Return empty results as fallback
+            results = []
+
+        # Build context string from results
         context_str = ""
         for i, r in enumerate(results):
-            if search_col in r:
-                context_str += f"Context document {i+1}: {r[search_col]} \n\n"
-        
+            # Try different possible column names for the text content
+            text_content = ""
+            for col_name in ["chunk", "content", "text", "body"]:
+                if col_name in r and r[col_name]:
+                    text_content = r[col_name]
+                    break
+
+            if text_content:
+                context_str += f"Context document {i + 1}: {text_content} \n\n"
+
         if st.session_state.get("debug"):
             st.sidebar.text_area("Retrieved Context", context_str, height=400)
             st.sidebar.json({"search_results": results})
-        
+
         return context_str, results
-    
+
     except Exception as e:
         st.error(f"Error querying search service: {e}")
         if st.session_state.get("debug"):
@@ -215,8 +386,16 @@ def query_cortex_search_service(query, columns=[], filter={}):
             st.sidebar.write("Debug info:")
             st.sidebar.write(f"Current Database: {session.get_current_database()}")
             st.sidebar.write(f"Current Schema: {session.get_current_schema()}")
-            st.sidebar.write(f"Using Service: {CORTEX_SERVICE}")
-        return "No context retrieved due to search error.", []
+            st.sidebar.write(
+                f"Target Service: {st.session_state.selected_cortex_search_service}"
+            )
+
+        # Return fallback response when search fails
+        return """Based on general veterinary knowledge, I'll do my best to help with your pet health question.
+        However, for the most accurate and specific information, please consult with your veterinarian.
+
+        Note: The search service is currently unavailable, so this response is based on general knowledge only.""", []
+
 
 def get_chat_history():
     """Get recent chat history for context"""
@@ -226,8 +405,9 @@ def get_chat_history():
     if len(msgs) < 2:
         return []
     # Exclude the latest user message
-    relevant = msgs[max(0, len(msgs)-n-1):len(msgs)-1]
+    relevant = msgs[max(0, len(msgs) - n - 1) : len(msgs) - 1]
     return relevant
+
 
 def complete(model, prompt):
     try:
@@ -262,37 +442,39 @@ def make_chat_history_summary(chat_history, question):
         </question>
         [/INST]
     """
-    
-    summary = complete(MODEL, prompt)
-    
+
+    summary = complete(st.session_state.model_name, prompt)
+
     if st.session_state.get("debug"):
         st.sidebar.text_area("Enhanced Query", summary.replace("$", "\$"), height=150)
-    
+
     return summary
+
 
 def get_pet_context():
     """Build pet-specific context string"""
     pet_info = st.session_state.pet_info
     if not pet_info or not any(pet_info.values()):
         return ""
-    
+
     pet_details = []
-    if pet_info.get('name'):
+    if pet_info.get("name"):
         pet_details.append(f"Pet name: {pet_info['name']}")
-    if pet_info.get('type'):
+    if pet_info.get("type"):
         pet_details.append(f"Type: {pet_info['type']}")
-    if pet_info.get('breed'):
+    if pet_info.get("breed"):
         pet_details.append(f"Breed: {pet_info['breed']}")
-    if pet_info.get('age'):
+    if pet_info.get("age"):
         pet_details.append(f"Age: {pet_info['age']} years")
-    if pet_info.get('weight'):
+    if pet_info.get("weight"):
         pet_details.append(f"Weight: {pet_info['weight']} lbs")
-    if pet_info.get('spayed_neutered'):
+    if pet_info.get("spayed_neutered"):
         pet_details.append(f"Spayed/Neutered: {pet_info['spayed_neutered']}")
-    if pet_info.get('medical_conditions'):
+    if pet_info.get("medical_conditions"):
         pet_details.append(f"Medical conditions: {pet_info['medical_conditions']}")
-    
+
     return f"\n\nPet Information: {', '.join(pet_details)}"
+
 
 def create_prompt(user_question):
     """Create a comprehensive prompt for the pet health assistant"""
@@ -303,23 +485,21 @@ def create_prompt(user_question):
             question_summary = make_chat_history_summary(chat_history, user_question)
             prompt_context, results = query_cortex_search_service(
                 question_summary,
-                columns=["chunk", "file_url", "relative_path", "title"]
+                columns=["chunk", "file_url", "relative_path", "title"],
             )
         else:
             prompt_context, results = query_cortex_search_service(
-                user_question,
-                columns=["chunk", "file_url", "relative_path", "title"]
+                user_question, columns=["chunk", "file_url", "relative_path", "title"]
             )
     else:
         prompt_context, results = query_cortex_search_service(
-            user_question,
-            columns=["chunk", "file_url", "relative_path", "title"]
+            user_question, columns=["chunk", "file_url", "relative_path", "title"]
         )
         chat_history = ""
-    
+
     # Get pet-specific context
     pet_context = get_pet_context()
-    
+
     prompt = f"""
         [INST]
         You are a knowledgeable veterinary assistant AI designed to help pet owners with health-related questions.
@@ -356,15 +536,19 @@ def create_prompt(user_question):
         
         Response:
     """
-    
+
     return prompt, results
+
 
 def display_main_interface():
     """Display the main chat interface"""
-    st.markdown('<h1 class="main-header">🐾 Pet Health Assistant</h1>', unsafe_allow_html=True)
-    
+    st.markdown(
+        '<h1 class="main-header">🐾 Pet Health Assistant</h1>', unsafe_allow_html=True
+    )
+
     # Medical disclaimer
-    st.markdown("""
+    st.markdown(
+        """
     <div class="warning-box">
         <strong>⚠️ Important Medical Disclaimer:</strong><br>
         This AI assistant provides general information about pet health for educational purposes only. 
@@ -372,27 +556,33 @@ def display_main_interface():
         Always consult with a qualified veterinarian for your pet's specific health concerns.
         <strong>In case of emergency, contact your veterinarian or emergency animal hospital immediately.</strong>
     </div>
-    """, unsafe_allow_html=True)
-    
+    """,
+        unsafe_allow_html=True,
+    )
+
     # Display current pet info if available
     if st.session_state.pet_info and any(st.session_state.pet_info.values()):
         pet_info = st.session_state.pet_info
         pet_summary = []
-        if pet_info.get('name'):
+        if pet_info.get("name"):
             pet_summary.append(f"**{pet_info['name']}**")
-        if pet_info.get('type'):
-            pet_summary.append(pet_info['type'])
-        if pet_info.get('breed'):
-            pet_summary.append(pet_info['breed'])
-        if pet_info.get('age'):
+        if pet_info.get("type"):
+            pet_summary.append(pet_info["type"])
+        if pet_info.get("breed"):
+            pet_summary.append(pet_info["breed"])
+        if pet_info.get("age"):
             pet_summary.append(f"{pet_info['age']} years old")
-        
+
         if pet_summary:
-            st.markdown(f"""
+            st.markdown(
+                f"""
             <div class="pet-info-card">
-                🐾 <strong>Current Pet:</strong> {' • '.join(pet_summary)}
+                🐾 <strong>Current Pet:</strong> {" • ".join(pet_summary)}
             </div>
-            """, unsafe_allow_html=True)
+            """,
+                unsafe_allow_html=True,
+            )
+
 
 def main():
     """Main application function"""
@@ -401,79 +591,98 @@ def main():
     init_pet_info()
     init_selected_service()
     init_messages()
-    
+
     # Sidebar components
     with st.sidebar:
-        display_pet_info_sidebar()
-        display_sample_questions()
-    
+        if st.session_state.service_metadata:
+            display_pet_info_sidebar()
+            display_sample_questions()
+
     # Main interface
     display_main_interface()
-    
+
     # Chat interface
     icons = {"assistant": "🤖", "user": "👤"}
-    
+
     # Display chat messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"], avatar=icons[message["role"]]):
             st.markdown(message["content"])
-    
-    # Service is hardcoded, so chat is always available
-    disable_chat = False
-    
+
+    # Check if we can chat
+    disable_chat = (
+        "service_metadata" not in st.session_state
+        or len(st.session_state.service_metadata) == 0
+        or "selected_cortex_search_service" not in st.session_state
+    )
+
+    if disable_chat:
+        st.warning(
+            "⚠️ Please ensure the PETAPP.DATA.CC_SEARCH_SERVICE_CS service is available and selected in the sidebar."
+        )
+
     # Handle sample question
-    if 'sample_question' in st.session_state:
+    if "sample_question" in st.session_state:
         question = st.session_state.sample_question
         del st.session_state.sample_question
     else:
-        question = st.chat_input("Ask me about your pet's health...")
-    
+        question = st.chat_input(
+            "Ask me about your pet's health..."
+            if not disable_chat
+            else "Please ensure PETAPP.DATA.CC_SEARCH_SERVICE_CS is configured",
+            disabled=disable_chat,
+        )
+
     if question:
         # Add user message
         st.session_state.messages.append({"role": "user", "content": question})
-        
+
         with st.chat_message("user", avatar=icons["user"]):
             st.markdown(question.replace("$", "\$"))
-        
+
         # Generate assistant response
         with st.chat_message("assistant", avatar=icons["assistant"]):
             message_placeholder = st.empty()
-            
+
             with st.spinner("🔍 Searching veterinary knowledge base..."):
                 # Clean question and create prompt
                 cleaned_question = question.replace("'", "")
                 prompt, results = create_prompt(cleaned_question)
-                
+
                 # Generate response
-                generated_response = complete(MODEL, prompt)
-                
+                generated_response = complete(st.session_state.model_name, prompt)
+
                 # Build references if available
                 references = ""
                 if results:
                     references = "\n\n###### 📚 References \n\n| Document | Source |\n|----------|--------|\n"
                     for ref in results:
-                        title = ref.get('title', ref.get('relative_path', 'Unknown'))
-                        url = ref.get('file_url', '#')
+                        title = ref.get("title", ref.get("relative_path", "Unknown"))
+                        url = ref.get("file_url", "#")
                         references += f"| {title} | [View Source]({url}) |\n"
-                
+
                 # Display response with references
                 full_response = generated_response + references
                 message_placeholder.markdown(full_response)
-        
+
         # Save assistant message
         st.session_state.messages.append(
             {"role": "assistant", "content": generated_response}
         )
-    
+
     # Footer
     st.markdown("---")
-    st.markdown("""
+    st.markdown(
+        """
     <div style="text-align: center; color: #666; font-size: 0.9em; padding: 1rem;">
         💡 <strong>Tips:</strong> Be specific about your pet's symptoms, include breed/age info, and describe any changes in behavior.
         <br>
         🔧 <strong>Powered by:</strong> Snowflake Cortex AI • Built with Streamlit in Snowflake
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
+
 
 if __name__ == "__main__":
     main()
