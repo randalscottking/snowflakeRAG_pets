@@ -2,6 +2,7 @@ import streamlit as st
 from snowflake.core import Root
 from snowflake.cortex import Complete
 from snowflake.snowpark.context import get_active_session
+import json
 
 # --- Move session and root initialization to module-level to avoid NameError ---
 session = get_active_session()
@@ -174,18 +175,25 @@ def display_sample_questions():
 def query_cortex_search_service(query, columns=[], filter={}):
     """Query the cortex search service for relevant pet health documents"""
     try:
-        # Use hardcoded service configuration
-        cortex_search_service = (
-            root.databases["PETAPP"]
-            .schemas["DATA"]
-            .cortex_search_services["CC_SEARCH_SERVICE_CS"]
-        )
+        # Use SQL-based approach for Cortex Search
+        limit = st.session_state.num_retrieved_chunks
 
-        context_documents = cortex_search_service.search(
-            query, columns=columns, filter=filter, limit=st.session_state.num_retrieved_chunks
-        )
-        results = context_documents.results
+        sql = f"""
+            SELECT SNOWFLAKE.CORTEX.SEARCH(
+                '{CORTEX_SERVICE}',
+                '{query.replace("'", "''")}'
+            ) AS search_results
+        """
 
+        df = session.sql(sql).to_pandas()
+        search_results = df["SEARCH_RESULTS"][0]
+
+        # Parse the results - they should be in JSON format
+        if isinstance(search_results, str):
+            search_results = json.loads(search_results)
+
+        # Extract results and limit them
+        results = search_results.get("results", [])[:limit]
         search_col = SEARCH_COLUMN.lower()
         
         context_str = ""
