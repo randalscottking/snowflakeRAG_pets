@@ -7,17 +7,12 @@ from snowflake.snowpark.context import get_active_session
 session = get_active_session()
 root = Root(session)
 
-# Available models for Snowflake Cortex
-MODELS = [
-    "mistral-large2",
-    "llama3.1-70b",
-    "llama3.1-8b",
-    "llama3-70b",
-    "llama3-8b",
-    "mixtral-8x7b",
-    "reka-flash",
-    "reka-core",
-]
+# Use llama3-8b model
+MODEL = "llama3-8b"
+
+# Hardcoded Cortex Search Service configuration
+CORTEX_SERVICE = "PETAPP.DATA.CC_SEARCH_SERVICE_CS"
+SEARCH_COLUMN = "chunk"
 
 # Page configuration
 st.set_page_config(
@@ -74,56 +69,11 @@ def init_messages():
 def init_service_metadata():
     """Initialize cortex search service metadata"""
     if "service_metadata" not in st.session_state:
-        service_metadata = []
-        try:
-            # Try to show services in current context first
-            services = session.sql("SHOW CORTEX SEARCH SERVICES;").collect()
-            if services:
-                for s in services:
-                    try:
-                        svc_name = s["name"]
-                        svc_search_col = session.sql(
-                            f"DESC CORTEX SEARCH SERVICE {svc_name};"
-                        ).collect()[0]["search_column"]
-                        service_metadata.append(
-                            {"name": svc_name, "search_column": svc_search_col}
-                        )
-                    except Exception as e:
-                        st.sidebar.error(f"Error describing service {svc_name}: {e}")
-            
-            # Also try to specifically check for our known service in PETAPP.DATA
-            try:
-                # Try to describe the specific service we know about
-                test_service = session.sql("DESC CORTEX SEARCH SERVICE PETAPP.DATA.CC_SEARCH_SERVICE_CS;").collect()
-                if test_service:
-                    # Check if it's already in our list
-                    existing_names = [s["name"] for s in service_metadata]
-                    if "PETAPP.DATA.CC_SEARCH_SERVICE_CS" not in existing_names:
-                        service_metadata.append({
-                            "name": "PETAPP.DATA.CC_SEARCH_SERVICE_CS",
-                            "search_column": test_service[0]["search_column"]
-                        })
-            except Exception as e:
-                st.sidebar.warning(f"Could not access PETAPP.DATA.CC_SEARCH_SERVICE_CS: {e}")
-            
-            # If still no services found, create fallback
-            if not service_metadata:
-                service_metadata = [{
-                    "name": "PETAPP.DATA.CC_SEARCH_SERVICE_CS",
-                    "search_column": "chunk"  # Common default
-                }]
-                st.sidebar.warning("Using fallback configuration for PETAPP.DATA.CC_SEARCH_SERVICE_CS")
-        
-        except Exception as e:
-            st.sidebar.error(f"Error querying Cortex Search Services: {e}")
-            # Fallback - assume the service exists with default search column
-            service_metadata = [{
-                "name": "PETAPP.DATA.CC_SEARCH_SERVICE_CS",
-                "search_column": "chunk"  # Common default
-            }]
-            st.sidebar.warning("Using fallback configuration. Please verify the service exists.")
-        
-        st.session_state.service_metadata = service_metadata
+        # Use hardcoded service configuration
+        st.session_state.service_metadata = [{
+            "name": CORTEX_SERVICE,
+            "search_column": SEARCH_COLUMN
+        }]
 
 def init_pet_info():
     """Initialize pet information in session state"""
@@ -133,20 +83,9 @@ def init_pet_info():
 def init_selected_service():
     """Initialize selected cortex search service and default config values"""
     if "selected_cortex_search_service" not in st.session_state:
-        # Set default service if available
-        if st.session_state.service_metadata:
-            target_service = "PETAPP.DATA.CC_SEARCH_SERVICE_CS"
-            service_names = [s["name"] for s in st.session_state.service_metadata]
-            if target_service in service_names:
-                st.session_state.selected_cortex_search_service = target_service
-            else:
-                st.session_state.selected_cortex_search_service = service_names[0]
-        else:
-            st.session_state.selected_cortex_search_service = "PETAPP.DATA.CC_SEARCH_SERVICE_CS"
+        st.session_state.selected_cortex_search_service = CORTEX_SERVICE
 
     # Initialize default configuration values
-    if "model_name" not in st.session_state:
-        st.session_state.model_name = "mistral-large2"
     if "num_retrieved_chunks" not in st.session_state:
         st.session_state.num_retrieved_chunks = 5
     if "num_chat_messages" not in st.session_state:
@@ -235,58 +174,19 @@ def display_sample_questions():
 def query_cortex_search_service(query, columns=[], filter={}):
     """Query the cortex search service for relevant pet health documents"""
     try:
-        # For the specific service PETAPP.DATA.CC_SEARCH_SERVICE_CS
-        service_name = st.session_state.selected_cortex_search_service
-        
-        # Since we know the service is in PETAPP.DATA, use those explicitly
-        if service_name == "PETAPP.DATA.CC_SEARCH_SERVICE_CS":
-            cortex_search_service = (
-                root.databases["PETAPP"]
-                .schemas["DATA"]
-                .cortex_search_services["CC_SEARCH_SERVICE_CS"]
-            )
-        else:
-            # Handle other cases - parse the service name
-            if "." in service_name:
-                parts = service_name.split(".")
-                if len(parts) == 3:
-                    service_db, service_schema, service_name_only = parts
-                    cortex_search_service = (
-                        root.databases[service_db]
-                        .schemas[service_schema]
-                        .cortex_search_services[service_name_only]
-                    )
-                else:
-                    # Fallback to current context
-                    db, schema = session.get_current_database(), session.get_current_schema()
-                    cortex_search_service = (
-                        root.databases[db]
-                        .schemas[schema]
-                        .cortex_search_services[service_name]
-                    )
-            else:
-                # Use current database/schema context
-                db, schema = session.get_current_database(), session.get_current_schema()
-                cortex_search_service = (
-                    root.databases[db]
-                    .schemas[schema]
-                    .cortex_search_services[service_name]
-                )
-        
+        # Use hardcoded service configuration
+        cortex_search_service = (
+            root.databases["PETAPP"]
+            .schemas["DATA"]
+            .cortex_search_services["CC_SEARCH_SERVICE_CS"]
+        )
+
         context_documents = cortex_search_service.search(
             query, columns=columns, filter=filter, limit=st.session_state.num_retrieved_chunks
         )
         results = context_documents.results
-        
-        service_metadata = st.session_state.service_metadata
-        try:
-            search_col = next(
-                s["search_column"] for s in service_metadata
-                if s["name"] == st.session_state.selected_cortex_search_service
-            )
-        except StopIteration:
-            search_col = "chunk"
-        search_col = search_col.lower()
+
+        search_col = SEARCH_COLUMN.lower()
         
         context_str = ""
         for i, r in enumerate(results):
@@ -307,8 +207,7 @@ def query_cortex_search_service(query, columns=[], filter={}):
             st.sidebar.write("Debug info:")
             st.sidebar.write(f"Current Database: {session.get_current_database()}")
             st.sidebar.write(f"Current Schema: {session.get_current_schema()}")
-            st.sidebar.write(f"Target Service: {st.session_state.selected_cortex_search_service}")
-            st.sidebar.write("Trying to access: PETAPP.DATA.CC_SEARCH_SERVICE_CS")
+            st.sidebar.write(f"Using Service: {CORTEX_SERVICE}")
         return "No context retrieved due to search error.", []
 
 def get_chat_history():
@@ -356,7 +255,7 @@ def make_chat_history_summary(chat_history, question):
         [/INST]
     """
     
-    summary = complete(st.session_state.model_name, prompt)
+    summary = complete(MODEL, prompt)
     
     if st.session_state.get("debug"):
         st.sidebar.text_area("Enhanced Query", summary.replace("$", "\$"), height=150)
@@ -497,9 +396,8 @@ def main():
     
     # Sidebar components
     with st.sidebar:
-        if st.session_state.service_metadata:
-            display_pet_info_sidebar()
-            display_sample_questions()
+        display_pet_info_sidebar()
+        display_sample_questions()
     
     # Main interface
     display_main_interface()
@@ -512,25 +410,15 @@ def main():
         with st.chat_message(message["role"], avatar=icons[message["role"]]):
             st.markdown(message["content"])
     
-    # Check if we can chat
-    disable_chat = (
-        "service_metadata" not in st.session_state
-        or len(st.session_state.service_metadata) == 0
-        or "selected_cortex_search_service" not in st.session_state
-    )
-    
-    if disable_chat:
-        st.warning("⚠️ Please ensure the PETAPP.DATA.CC_SEARCH_SERVICE_CS service is available and selected in the sidebar.")
+    # Service is hardcoded, so chat is always available
+    disable_chat = False
     
     # Handle sample question
     if 'sample_question' in st.session_state:
         question = st.session_state.sample_question
         del st.session_state.sample_question
     else:
-        question = st.chat_input(
-            "Ask me about your pet's health..." if not disable_chat else "Please ensure PETAPP.DATA.CC_SEARCH_SERVICE_CS is configured",
-            disabled=disable_chat
-        )
+        question = st.chat_input("Ask me about your pet's health...")
     
     if question:
         # Add user message
@@ -549,7 +437,7 @@ def main():
                 prompt, results = create_prompt(cleaned_question)
                 
                 # Generate response
-                generated_response = complete(st.session_state.model_name, prompt)
+                generated_response = complete(MODEL, prompt)
                 
                 # Build references if available
                 references = ""
