@@ -331,7 +331,17 @@ def query_cortex_search_service(query, columns=[], filter={}):
             search_tables = []
             for table in tables_result:
                 table_name = table["name"].upper()
-                if any(keyword in table_name for keyword in ["SEARCH", "INDEX", "CHUNK", "DOCUMENT", "VET", "PET"]):
+                if any(
+                    keyword in table_name
+                    for keyword in [
+                        "SEARCH",
+                        "INDEX",
+                        "CHUNK",
+                        "DOCUMENT",
+                        "VET",
+                        "PET",
+                    ]
+                ):
                     search_tables.append(f"PETAPP.DATA.{table_name}")
 
             if search_tables:
@@ -349,7 +359,7 @@ def query_cortex_search_service(query, columns=[], filter={}):
                 """
 
                 df = session.sql(simple_sql).to_pandas()
-                results = df.to_dict('records')
+                results = df.to_dict("records")
             else:
                 # Fallback - return empty results
                 results = []
@@ -391,10 +401,13 @@ def query_cortex_search_service(query, columns=[], filter={}):
             )
 
         # Return fallback response when search fails
-        return """Based on general veterinary knowledge, I'll do my best to help with your pet health question.
+        return (
+            """Based on general veterinary knowledge, I'll do my best to help with your pet health question.
         However, for the most accurate and specific information, please consult with your veterinarian.
 
-        Note: The search service is currently unavailable, so this response is based on general knowledge only.""", []
+        Note: The search service is currently unavailable, so this response is based on general knowledge only.""",
+            [],
+        )
 
 
 def get_chat_history():
