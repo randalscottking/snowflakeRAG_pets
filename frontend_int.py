@@ -2,8 +2,6 @@ import streamlit as st
 from snowflake.core import Root
 from snowflake.cortex import Complete
 from snowflake.snowpark.context import get_active_session
-import json
-from datetime import datetime
 
 # --- Move session and root initialization to module-level to avoid NameError ---
 session = get_active_session()
@@ -132,106 +130,31 @@ def init_pet_info():
     if "pet_info" not in st.session_state:
         st.session_state.pet_info = {}
 
-def init_config_options():
-    """Initialize configuration options in the sidebar"""
-    st.sidebar.markdown("### ⚙️ Configuration")
-    
-    # Show current database context
-    try:
-        current_db = session.get_current_database()
-        current_schema = session.get_current_schema()
-        st.sidebar.info(f"📍 Current Context: {current_db}.{current_schema}")
-        st.sidebar.info(f"🎯 Target Service: PETAPP.DATA.CC_SEARCH_SERVICE_CS")
-    except Exception:
-        st.sidebar.warning("Could not determine current database context")
-    
-    # Cortex Search Service Selection
-    if st.session_state.service_metadata:
-        service_names = [s["name"] for s in st.session_state.service_metadata]
-        
-        # Set default index to PETAPP.DATA.CC_SEARCH_SERVICE_CS if it exists
-        default_index = 0
-        target_service = "PETAPP.DATA.CC_SEARCH_SERVICE_CS"
-        if target_service in service_names:
-            default_index = service_names.index(target_service)
-        
-        st.sidebar.selectbox(
-            "Pet Health Search Service:",
-            service_names,
-            index=default_index,
-            key="selected_cortex_search_service",
-            help="Choose the search service containing pet health documents"
-        )
-        
-        # Display current service info
-        if st.session_state.get('selected_cortex_search_service'):
-            selected_service = next((s for s in st.session_state.service_metadata 
-                                  if s["name"] == st.session_state.selected_cortex_search_service), None)
-            if selected_service:
-                st.sidebar.success(f"✅ Service: {st.session_state.selected_cortex_search_service}")
-                st.sidebar.info(f"🔍 Search Column: {selected_service['search_column']}")
-    else:
-        st.sidebar.error("❌ No Cortex Search Services found")
-        st.sidebar.markdown("**Troubleshooting:**")
-        st.sidebar.markdown("- Ensure you're in the correct database/schema")
-        st.sidebar.markdown("- Verify the service PETAPP.DATA.CC_SEARCH_SERVICE_CS exists")
-        st.sidebar.markdown("- Check permissions to access Cortex Search services")
-        
-        # Manual configuration option
-        with st.sidebar.expander("🔧 Manual Configuration"):
-            manual_service = st.text_input(
-                "Service Name:", 
-                value="PETAPP.DATA.CC_SEARCH_SERVICE_CS",
-                key="manual_service_name"
-            )
-            manual_search_col = st.text_input(
-                "Search Column:", 
-                value="chunk",
-                key="manual_search_column"
-            )
-            if st.button("Use Manual Config"):
-                st.session_state.service_metadata = [{
-                    "name": manual_service,
-                    "search_column": manual_search_col
-                }]
-                st.session_state.selected_cortex_search_service = manual_service
-                st.rerun()
-    
-    # Control buttons
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        st.button("🗑️ Clear Chat", key="clear_conversation")
-    with col2:
-        if st.session_state.get("messages"):
-            export_chat()
-    
-    # Toggles
-    st.sidebar.toggle("Debug Mode", key="debug", value=False, help="Show search context and prompts")
-    st.sidebar.toggle("Use Chat History", key="use_chat_history", value=True, help="Include previous messages for context")
-    
-    # Advanced options
-    with st.sidebar.expander("🔧 Advanced Options"):
-        st.selectbox("Language Model:", MODELS, key="model_name", index=0)
-        st.number_input(
-            "Max Search Results",
-            value=5,
-            key="num_retrieved_chunks",
-            min_value=1,
-            max_value=10,
-            help="Number of document chunks to retrieve"
-        )
-        st.number_input(
-            "Chat History Length",
-            value=5,
-            key="num_chat_messages",
-            min_value=1,
-            max_value=10,
-            help="Number of previous messages to include"
-        )
-    
-    # Debug session state
-    if st.sidebar.toggle("Show Session State", value=False):
-        st.sidebar.expander("Session State").write(st.session_state)
+def init_selected_service():
+    """Initialize selected cortex search service and default config values"""
+    if "selected_cortex_search_service" not in st.session_state:
+        # Set default service if available
+        if st.session_state.service_metadata:
+            target_service = "PETAPP.DATA.CC_SEARCH_SERVICE_CS"
+            service_names = [s["name"] for s in st.session_state.service_metadata]
+            if target_service in service_names:
+                st.session_state.selected_cortex_search_service = target_service
+            else:
+                st.session_state.selected_cortex_search_service = service_names[0]
+        else:
+            st.session_state.selected_cortex_search_service = "PETAPP.DATA.CC_SEARCH_SERVICE_CS"
+
+    # Initialize default configuration values
+    if "model_name" not in st.session_state:
+        st.session_state.model_name = "mistral-large2"
+    if "num_retrieved_chunks" not in st.session_state:
+        st.session_state.num_retrieved_chunks = 5
+    if "num_chat_messages" not in st.session_state:
+        st.session_state.num_chat_messages = 5
+    if "use_chat_history" not in st.session_state:
+        st.session_state.use_chat_history = True
+    if "debug" not in st.session_state:
+        st.session_state.debug = False
 
 def display_pet_info_sidebar():
     """Display pet information input in sidebar"""
@@ -307,46 +230,7 @@ def display_sample_questions():
             st.session_state.sample_question = question
             st.rerun()
 
-def display_analytics():
-    """Display conversation analytics"""
-    if st.session_state.get("messages"):
-        st.sidebar.markdown("### 📊 Session Stats")
-        
-        user_messages = [msg for msg in st.session_state.messages if msg["role"] == "user"]
-        assistant_messages = [msg for msg in st.session_state.messages if msg["role"] == "assistant"]
-        
-        col1, col2 = st.sidebar.columns(2)
-        with col1:
-            st.markdown(f"""
-            <div class="metric-card">
-                <strong>{len(user_messages)}</strong><br>
-                Questions
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown(f"""
-            <div class="metric-card">
-                <strong>{len(assistant_messages)}</strong><br>
-                Responses
-            </div>
-            """, unsafe_allow_html=True)
 
-def export_chat():
-    """Export chat history as JSON"""
-    chat_export = {
-        "timestamp": datetime.now().isoformat(),
-        "pet_info": st.session_state.pet_info,
-        "search_service": st.session_state.get('selected_cortex_search_service', ''),
-        "model": st.session_state.get('model_name', ''),
-        "messages": st.session_state.messages
-    }
-    st.download_button(
-        "Download Chat History",
-        data=json.dumps(chat_export, indent=2, default=str),
-        file_name=f"pet_health_chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-        mime="application/json"
-    )
 
 def query_cortex_search_service(query, columns=[], filter={}):
     """Query the cortex search service for relevant pet health documents"""
@@ -608,7 +492,7 @@ def main():
     # Initialize session state
     init_service_metadata()
     init_pet_info()
-    init_config_options()
+    init_selected_service()
     init_messages()
     
     # Sidebar components
@@ -616,7 +500,6 @@ def main():
         if st.session_state.service_metadata:
             display_pet_info_sidebar()
             display_sample_questions()
-            display_analytics()
     
     # Main interface
     display_main_interface()
